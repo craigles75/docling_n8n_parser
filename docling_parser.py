@@ -8,6 +8,8 @@ Outputs structured JSON to stdout for easy n8n consumption
 import sys
 import json
 import argparse
+import tempfile
+import os
 from pathlib import Path
 from typing import Dict, List, Any
 
@@ -88,21 +90,24 @@ def parse_pdf(pdf_path: str, extract_tables: bool = True, extract_text: bool = T
                 # We'll try to get it as a DataFrame first, then fall back
                 try:
                     # Try to get as pandas DataFrame if available
-                    if hasattr(table, 'to_dataframe'):
-                        df = table.to_dataframe()
-                        table_dict["headers"] = df.columns.tolist()
-                        table_dict["data"] = df.values.tolist()
+                    if hasattr(table, 'export_to_dataframe'):
+                        df = table.export_to_dataframe()
+                        # Convert to JSON-serializable format
+                        table_dict["headers"] = [str(col) for col in df.columns.tolist()]
+                        table_dict["data"] = [[str(cell) if cell is not None else "" for cell in row] for row in df.values.tolist()]
                         table_dict["num_rows"] = len(df)
                         table_dict["num_cols"] = len(df.columns)
-                    # Alternative: get raw table data
-                    elif hasattr(table, 'data'):
-                        table_dict["data"] = table.data
-                        if table_dict["data"]:
-                            table_dict["num_rows"] = len(table_dict["data"])
-                            table_dict["num_cols"] = len(table_dict["data"][0]) if table_dict["data"] else 0
-                            # Try to detect headers (first row)
-                            if len(table_dict["data"]) > 0:
-                                table_dict["headers"] = table_dict["data"][0]
+                    # Alternative: try export_to_dict or similar
+                    elif hasattr(table, 'export_to_dict'):
+                        table_export = table.export_to_dict()
+                        # Process dict format if available
+                        if isinstance(table_export, dict):
+                            table_dict.update(table_export)
+                    # Last resort: try to serialize table as string representation
+                    else:
+                        # Get string representation of table
+                        table_dict["data"] = str(table)
+                        table_dict["note"] = "Table could not be parsed into structured format"
                 except Exception as e:
                     # If table extraction fails, store error info
                     table_dict["error"] = str(e)
@@ -151,58 +156,132 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Extract tables and text from a PDF
+  # Extract tables and text from a PDF file
   python docling_parser.py document.pdf
-  
+
   # Extract only tables
   python docling_parser.py document.pdf --no-text
-  
+
   # Extract only text
   python docling_parser.py document.pdf --no-tables
-  
+
   # Pretty print JSON output
   python docling_parser.py document.pdf --pretty
+
+  # Read PDF binary data from stdin (for n8n integration)
+  cat document.pdf | python docling_parser.py --stdin
+
+  # Read from stdin with base64 decoding (for n8n)
+  echo "base64data" | base64 -d | python docling_parser.py --stdin
         """
     )
-    
+
     parser.add_argument(
         'pdf_file',
-        help='Path to the PDF file to parse'
+        nargs='?',
+        help='Path to the PDF file to parse (not needed with --stdin)'
     )
-    
+
+    parser.add_argument(
+        '--stdin',
+        action='store_true',
+        help='Read PDF binary data from stdin instead of a file'
+    )
+
     parser.add_argument(
         '--no-tables',
         action='store_true',
         help='Skip table extraction'
     )
-    
+
     parser.add_argument(
         '--no-text',
         action='store_true',
         help='Skip text extraction'
     )
-    
+
     parser.add_argument(
         '--pretty',
         action='store_true',
         help='Pretty print JSON output'
     )
-    
+
     args = parser.parse_args()
-    
-    # Parse the PDF
-    result = parse_pdf(
-        args.pdf_file,
-        extract_tables=not args.no_tables,
-        extract_text=not args.no_text
-    )
-    
+
+    # Validate arguments
+    if args.stdin and args.pdf_file:
+        print(json.dumps({
+            "success": False,
+            "error": "Invalid arguments",
+            "message": "Cannot specify both --stdin and a file path"
+        }))
+        sys.exit(1)
+
+    if not args.stdin and not args.pdf_file:
+        print(json.dumps({
+            "success": False,
+            "error": "Missing argument",
+            "message": "Must specify either a PDF file path or use --stdin"
+        }))
+        sys.exit(1)
+
+    # Handle stdin input
+    if args.stdin:
+        temp_file = None
+        try:
+            # Read binary data from stdin
+            pdf_data = sys.stdin.buffer.read()
+
+            if not pdf_data:
+                print(json.dumps({
+                    "success": False,
+                    "error": "Empty input",
+                    "message": "No data received from stdin"
+                }))
+                sys.exit(1)
+
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+            temp_file.write(pdf_data)
+            temp_file.close()
+
+            # Parse the PDF from temp file
+            result = parse_pdf(
+                temp_file.name,
+                extract_tables=not args.no_tables,
+                extract_text=not args.no_text
+            )
+
+            # Update result to indicate stdin was used
+            if result.get("success"):
+                result["file"] = "<stdin>"
+                result["filename"] = "<stdin>"
+
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": type(e).__name__,
+                "message": str(e),
+                "file": "<stdin>"
+            }
+        finally:
+            # Clean up temp file
+            if temp_file and os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+    else:
+        # Parse the PDF from file path
+        result = parse_pdf(
+            args.pdf_file,
+            extract_tables=not args.no_tables,
+            extract_text=not args.no_text
+        )
+
     # Output JSON to stdout
     if args.pretty:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(json.dumps(result, ensure_ascii=False))
-    
+
     # Exit with appropriate code
     sys.exit(0 if result.get("success", False) else 1)
 

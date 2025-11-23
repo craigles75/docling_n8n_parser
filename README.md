@@ -1,91 +1,82 @@
 # Docling PDF Parser for n8n
 
-A Python script that extracts tables and text from PDF files using the Docling library, designed for easy integration with n8n workflows.
+Extract tables and text from PDF files in your n8n workflows. No temporary file management required.
 
-## Installation
+## Quick Start
 
-### 1. Install uv (if not already installed)
+### 1. Install uv on your n8n server
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Or on Windows:
+Windows:
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### 2. Install Docling using uv
+### 2. Copy the script to your server
 
 ```bash
-uv pip install docling
+# Download or clone this repository
+git clone <repo-url>
+cd docling_n8n_parser
 ```
 
-Or use uv to run the script directly without manual installation:
-```bash
-uv run --with docling docling_parser.py document.pdf
-```
+That's it! No need to install Python packages - `uv` handles dependencies automatically.
 
-### 3. Make the script executable (optional)
+## Using in n8n
 
-```bash
-chmod +x docling_parser.py
-```
+### Recommended: Stdin Mode (No Temp Files)
 
-## Usage
+This is the simplest approach - pipe PDF binary data directly to the parser.
 
-### Basic Usage
+**n8n Workflow:**
 
-Extract both tables and text from a PDF:
+1. **Get PDF** - Use HTTP Request, Webhook, or Read Binary File node
 
-**Using standard Python:**
-```bash
-python docling_parser.py document.pdf
-```
+2. **Execute Command Node**
+   - **Command**: `bash`
+   - **Arguments**: `-c "uv run --with docling /path/to/docling_parser.py --stdin"`
+   - **Binary Data**: Enable and select your PDF binary data
 
-**Using uv (automatically handles dependencies):**
-```bash
-uv run --with docling docling_parser.py document.pdf
-```
+3. **Code Node** - Parse the JSON output:
+   ```javascript
+   const result = JSON.parse($input.item.json.stdout);
+   return result;
+   ```
 
-### Options
+4. **Process your data** - Access tables and text:
+   ```javascript
+   // Get all tables
+   const tables = $json.tables;
 
-- `--no-tables` - Skip table extraction, only extract text
-- `--no-text` - Skip text extraction, only extract tables
-- `--pretty` - Pretty print JSON output (useful for debugging)
+   // Get first table
+   const firstTable = $json.tables[0];
+   const headers = firstTable.headers;  // ["Column1", "Column2"]
+   const rows = firstTable.data;         // [["val1", "val2"], ...]
 
-### Examples
+   // Get extracted text
+   const fullText = $json.text;
 
-#### Extract only tables:
-```bash
-python docling_parser.py invoice.pdf --no-text
-# Or with uv:
-uv run --with docling docling_parser.py invoice.pdf --no-text
-```
+   // Convert table to array of objects
+   const tableObjects = rows.map(row => {
+     const obj = {};
+     headers.forEach((header, i) => {
+       obj[header] = row[i];
+     });
+     return obj;
+   });
+   ```
 
-#### Extract only text:
-```bash
-python docling_parser.py report.pdf --no-tables
-# Or with uv:
-uv run --with docling docling_parser.py report.pdf --no-tables
-```
+### Output Format
 
-#### Pretty print for debugging:
-```bash
-python docling_parser.py document.pdf --pretty
-# Or with uv:
-uv run --with docling docling_parser.py document.pdf --pretty
-```
-
-## Output Format
-
-The script outputs JSON to stdout with the following structure:
-
+**Success:**
 ```json
 {
   "success": true,
-  "file": "/absolute/path/to/file.pdf",
-  "filename": "file.pdf",
+  "file": "<stdin>",
+  "filename": "<stdin>",
   "tables": [
     {
       "headers": ["Column1", "Column2", "Column3"],
@@ -105,159 +96,105 @@ The script outputs JSON to stdout with the following structure:
 }
 ```
 
-### Error Format
-
-If an error occurs, the output will be:
-
+**Error:**
 ```json
 {
   "success": false,
   "error": "ErrorType",
   "message": "Error description",
-  "file": "/path/to/file.pdf"
+  "file": "<stdin>"
 }
 ```
 
-## Integration with n8n
+## Command Line Options
 
-### Method 1: Using Execute Command Node
+```bash
+# Extract both tables and text (default)
+cat document.pdf | uv run --with docling docling_parser.py --stdin
 
-1. **Read/Receive PDF file** - Use HTTP Request, Webhook, or Read Binary File node
+# Extract only tables (skip text)
+cat document.pdf | uv run --with docling docling_parser.py --stdin --no-text
 
-2. **Save to temporary file** - Use Code node to save the binary data:
-   ```javascript
-   const fs = require('fs');
-   const path = '/tmp/temp_pdf.pdf';
-   
-   // Get binary data
-   const binaryData = items[0].binary.data;
-   
-   // Write to file
-   fs.writeFileSync(path, Buffer.from(binaryData.data, 'base64'));
-   
-   return [{ json: { pdf_path: path } }];
-   ```
+# Extract only text (skip tables)
+cat document.pdf | uv run --with docling docling_parser.py --stdin --no-tables
 
-3. **Execute Parser** - Use Execute Command node:
-   
-   **Option A: Using uv (recommended - handles dependencies automatically)**
-   - **Command**: `uv`
-   - **Arguments**: `run --with docling /path/to/docling_parser.py {{$json.pdf_path}}`
-   
-   **Option B: Using Python directly (requires pre-installed docling)**
-   - **Command**: `python3`
-   - **Arguments**: `/path/to/docling_parser.py {{$json.pdf_path}}`
-   
-4. **Parse JSON Output** - The Execute Command node will return the JSON as text. Use a Code node to parse it:
-   ```javascript
-   const result = JSON.parse(items[0].json.stdout);
-   return [{ json: result }];
-   ```
-
-5. **Process Tables** - Now you can access the structured table data:
-   ```javascript
-   // Access first table
-   const firstTable = $json.tables[0];
-   
-   // Get headers
-   const headers = firstTable.headers;
-   
-   // Get all rows
-   const rows = firstTable.data;
-   
-   // Convert to array of objects (like CSV parsing)
-   const tableObjects = rows.map(row => {
-     const obj = {};
-     headers.forEach((header, i) => {
-       obj[header] = row[i];
-     });
-     return obj;
-   });
-   
-   return tableObjects.map(obj => ({ json: obj }));
-   ```
-
-### Method 2: Using HTTP Request to a Flask API (Advanced)
-
-If you prefer an API approach, you can wrap this script in a simple Flask server:
-
-```python
-from flask import Flask, request, jsonify
-import tempfile
-import os
-
-app = Flask(__name__)
-
-@app.route('/parse-pdf', methods=['POST'])
-def parse_pdf_endpoint():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-    
-    file = request.files['file']
-    
-    # Save to temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-        file.save(tmp.name)
-        tmp_path = tmp.name
-    
-    try:
-        # Parse the PDF
-        from docling_parser import parse_pdf
-        result = parse_pdf(tmp_path)
-        return jsonify(result)
-    finally:
-        # Clean up
-        os.unlink(tmp_path)
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+# Pretty print for debugging
+cat document.pdf | uv run --with docling docling_parser.py --stdin --pretty
 ```
-
-Then use n8n's HTTP Request node to POST the PDF to `http://localhost:5000/parse-pdf`.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"Docling not installed" error**
-   - Solution: Run `uv pip install docling` or use `uv run --with docling` to run the script
-
-2. **File not found error**
-   - Solution: Ensure you're using absolute paths
-   - Check file permissions
-
-3. **Empty tables array**
-   - Solution: The PDF might not contain properly formatted tables
-   - Try with `--pretty` flag to see full output
-
-4. **Memory issues with large PDFs**
-   - Solution: Process PDFs in smaller chunks or increase available memory
-
-5. **uv command not found**
-   - Solution: Install uv first: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-   - Make sure uv is in your PATH
-
-## System Requirements
-
-- Python 3.8 or higher
-- Sufficient memory for PDF processing (depends on PDF size)
-- Write permissions for temporary file storage (if saving PDFs)
 
 ## Testing
 
-Test the script with a sample PDF:
+Test with a sample PDF:
 
 ```bash
-# Test with uv (recommended - no pre-installation needed)
-uv run --with docling docling_parser.py test.pdf --pretty
+# Using stdin mode
+cat tmp/sample.pdf | uv run --with docling docling_parser.py --stdin --pretty
 
-# Or if you've installed docling with uv pip install
-python docling_parser.py test.pdf --pretty
+# Using file path mode
+uv run --with docling docling_parser.py tmp/sample.pdf --pretty
 
-# Check exit code
-echo $?  # Should be 0 for success, 1 for failure
+# Check exit code (0 = success, 1 = failure)
+echo $?
 ```
 
-## License
+## Troubleshooting
 
-This script is provided as-is for integration with n8n workflows.
+**"uv command not found"**
+- Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Add to PATH: `export PATH="$HOME/.local/bin:$PATH"`
+
+**"No data received from stdin"**
+- Ensure binary data is being piped correctly in n8n
+- Check that Binary Data is enabled in Execute Command node
+
+**"Empty tables array"**
+- PDF might not contain structured tables
+- Use `--pretty` flag to inspect full output
+- Try extracting text only with `--no-tables`
+
+**Memory issues with large PDFs**
+- Increase available memory for the process
+- Consider splitting large PDFs into smaller files
+
+## System Requirements
+
+- Python 3.8 or higher (usually pre-installed)
+- uv (handles all Python dependencies)
+- Sufficient memory for PDF processing (varies by PDF size)
+
+---
+
+## Alternative Methods
+
+### File Path Mode
+
+If you need to use file paths instead of stdin:
+
+```bash
+# In n8n Execute Command node:
+# Command: uv
+# Arguments: run --with docling /path/to/docling_parser.py /path/to/document.pdf
+```
+
+You'll need to save the binary data to a temp file first using a Code node:
+
+```javascript
+const fs = require('fs');
+const path = '/tmp/temp_pdf.pdf';
+const binaryData = items[0].binary.data;
+fs.writeFileSync(path, Buffer.from(binaryData.data, 'base64'));
+return [{ json: { pdf_path: path } }];
+```
+
+### Flask API Wrapper
+
+For HTTP-based integration, see the Flask example in the codebase.
+
+### Pre-installing Docling
+
+If you prefer to install docling once instead of using `uv run --with`:
+
+```bash
+uv pip install docling
+python3 docling_parser.py document.pdf
+```
